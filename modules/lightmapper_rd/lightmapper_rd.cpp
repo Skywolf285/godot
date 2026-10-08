@@ -369,7 +369,7 @@ Lightmapper::BakeError LightmapperRD::_blit_meshes_into_atlas(int p_max_texture_
 				if (ofs.z > 0) {
 					//valid
 					ofs.z = slices;
-					atlas_offsets.write[sidx] = ofs + Vector3i(1, 1, 0); // Center lightmap in the reserved oversized region
+					atlas_offsets.write[sidx] = ofs + Vector3i(1, 1, 0) * p_supersampling_factor; // Center lightmap in the reserved oversized region
 				} else {
 					new_indices.push_back(sidx);
 					new_sources.push_back(source_sizes[i]);
@@ -743,7 +743,7 @@ void LightmapperRD::_create_acceleration_structures(RenderingDevice *rd, Size2i 
 	}
 }
 
-void LightmapperRD::_raster_geometry(RenderingDevice *rd, Size2i atlas_size, int atlas_slices, int grid_size, AABB bounds, float p_bias, Vector<int> slice_triangle_count, RID position_tex, RID unocclude_tex, RID normal_tex, RID raster_depth_buffer, RID rasterize_shader, RID raster_base_uniform) {
+void LightmapperRD::_raster_geometry(RenderingDevice *rd, Size2i atlas_size, int atlas_slices, int grid_size, AABB bounds, float p_bias, float p_supersampling_factor, Vector<int> slice_triangle_count, RID position_tex, RID unocclude_tex, RID normal_tex, RID raster_depth_buffer, RID rasterize_shader, RID raster_base_uniform) {
 	Vector<RID> framebuffers;
 
 	for (int i = 0; i < atlas_slices; i++) {
@@ -768,6 +768,7 @@ void LightmapperRD::_raster_geometry(RenderingDevice *rd, Size2i atlas_size, int
 	{
 		RD::PipelineRasterizationState rw;
 		rw.wireframe = true;
+		rw.line_width = p_supersampling_factor;
 		raster_pipeline_wire = rd->render_pipeline_create(rasterize_shader, rd->framebuffer_get_format(framebuffers[0]), RD::INVALID_FORMAT_ID, RD::RENDER_PRIMITIVE_TRIANGLES, rw, RD::PipelineMultisampleState(), ds, RD::PipelineColorBlendState::create_disabled(3), 0);
 	}
 
@@ -1604,7 +1605,7 @@ LightmapperRD::BakeError LightmapperRD::bake(BakeQuality p_quality, bool p_use_d
 
 	/* STEP 3: Raster the geometry to UV2 coords in the atlas textures GPU*/
 
-	_raster_geometry(rd, atlas_size, atlas_slices, grid_size, bounds, p_bias, slice_triangle_count, position_tex, unocclude_tex, normal_tex, raster_depth_buffer, rasterize_shader, raster_base_uniform);
+	_raster_geometry(rd, atlas_size, atlas_slices, grid_size, bounds, p_bias, p_supersampling_factor, slice_triangle_count, position_tex, unocclude_tex, normal_tex, raster_depth_buffer, rasterize_shader, raster_base_uniform);
 
 #ifdef DEBUG_TEXTURES
 
