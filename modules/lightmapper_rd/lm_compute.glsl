@@ -952,19 +952,34 @@ void main() {
 #endif
 
 #ifdef MODE_DIRECT_LIGHT
+	// Retrieve starting normal and position.
 	vec3 normal = texelFetch(sampler2DArray(source_normal, linear_sampler), ivec3(atlas_pos, params.atlas_slice), 0).xyz;
 	if (length(normal) < 0.5) {
-		return; //empty texel, no process
+		// The pixel is empty, skip processing it.
+		return;
 	}
+
 	vec3 position = texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(atlas_pos, params.atlas_slice), 0).xyz;
-	vec4 neighbor_position = texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(atlas_pos + ivec2(1, 0), params.atlas_slice), 0).xyzw;
+	const ivec2 neighbor_offsets[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
 
-	if (neighbor_position.w < 0.001) {
-		// Empty texel, try again.
-		neighbor_position.xyz = texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(atlas_pos + ivec2(-1, 0), params.atlas_slice), 0).xyz;
+	float texel_size_world_space = 0.1; // fallback value
+
+	for (uint i = 0; i < 4; i++) {
+		const ivec3 neighbor_sample_pos = ivec3(atlas_pos + neighbor_offsets[i], params.atlas_slice);
+		if (any(lessThan(neighbor_sample_pos, ivec3(0))) || any(greaterThanEqual(neighbor_sample_pos.xy, bake_params.atlas_size))) {
+			// Outside the atlas, try again.
+			continue;
+		}
+
+		vec4 neighbor_position = texelFetch(sampler2DArray(source_position, linear_sampler), neighbor_sample_pos, 0).xyzw;
+		if (neighbor_position.w < 0.001) {
+			// Empty texel, try again.
+			continue;
+		}
+
+		texel_size_world_space = distance(position, neighbor_position.xyz) * bake_params.supersampling_factor;
+		break;
 	}
-	float texel_size_world_space = distance(position, neighbor_position.xyz) * bake_params.supersampling_factor;
-
 	vec3 light_for_texture = vec3(0.0);
 	vec3 light_for_bounces = vec3(0.0);
 
@@ -1075,9 +1090,27 @@ void main() {
 	}
 
 	vec3 position = texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(atlas_pos, params.atlas_slice), 0).xyz;
-	int neighbor_offset = atlas_pos.x < bake_params.atlas_size.x - 1 ? 1 : -1;
-	vec3 neighbor_position = texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(atlas_pos + ivec2(neighbor_offset, 0), params.atlas_slice), 0).xyz;
-	float texel_size_world_space = distance(position, neighbor_position);
+	const ivec2 neighbor_offsets[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+
+	float texel_size_world_space = 0.1; // fallback value
+
+	for (uint i = 0; i < 4; i++) {
+		const ivec3 neighbor_sample_pos = ivec3(atlas_pos + neighbor_offsets[i], params.atlas_slice);
+		if (any(lessThan(neighbor_sample_pos, ivec3(0))) || any(greaterThanEqual(neighbor_sample_pos.xy, bake_params.atlas_size))) {
+			// Outside the atlas, try again.
+			continue;
+		}
+
+		vec4 neighbor_position = texelFetch(sampler2DArray(source_position, linear_sampler), neighbor_sample_pos, 0).xyzw;
+		if (neighbor_position.w < 0.001) {
+			// Empty texel, try again.
+			continue;
+		}
+
+		texel_size_world_space = distance(position, neighbor_position.xyz) * bake_params.supersampling_factor;
+		break;
+	}
+
 	uint noise = random_seed(ivec3(params.ray_from, atlas_pos));
 	for (uint i = params.ray_from; i < params.ray_to; i++) {
 		vec3 ray_dir = generate_ray_dir_from_normal(normal, noise);
