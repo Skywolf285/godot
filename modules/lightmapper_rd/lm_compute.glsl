@@ -592,6 +592,8 @@ void trace_direct_light(vec3 p_position, vec3 p_normal, uint p_light_index, bool
 		vec3 light_to_point_tan = normalize(cross(light_to_point, light_aux));
 		vec3 light_to_point_bitan = normalize(cross(light_to_point, light_to_point_tan));
 
+		vec3 texel_center_pos = p_position + (p_normal * bake_params.bias); // Should probably use true normal.
+
 		float aa_power = 0.0;
 		for (uint i = 0; i < ray_count; i++) {
 			// Create a random sample within the texel.
@@ -635,8 +637,18 @@ void trace_direct_light(vec3 p_position, vec3 p_normal, uint p_light_index, bool
 					for (uint iter = 0; iter < bake_params.transparency_rays; iter++) {
 						vec4 hit_albedo = vec4(1.0);
 						vec3 hit_position;
+
 						// Offset the ray origin for AA, offset the light position for soft shadows.
-						uint ret = trace_ray_closest_hit_triangle_albedo_alpha(origin - light_disk_to_point * (bake_params.bias + length(disk_sample)), p_position - light_disk_to_point * dist, hit_albedo, hit_position);
+						vec3 from = origin - light_disk_to_point * (bake_params.bias + length(disk_sample));
+
+						// Check if new "from" position isn't blocked to avoid sampling through geometry.
+						// Add small offset to avoid landing too close to geometry and ending up still ray casting through it.
+						uint ret = trace_ray_any_hit(texel_center_pos, from + normalize(from - texel_center_pos) * 0.01);
+						if (ret != RAY_MISS) {
+							continue;
+						}
+
+						ret = trace_ray_closest_hit_triangle_albedo_alpha(from, p_position - light_disk_to_point * dist, hit_albedo, hit_position);
 						if (ret == RAY_MISS) {
 							if (!sample_did_hit) {
 								sample_penumbra = 1.0;
@@ -676,8 +688,18 @@ void trace_direct_light(vec3 p_position, vec3 p_normal, uint p_light_index, bool
 				for (uint iter = 0; iter < bake_params.transparency_rays; iter++) {
 					vec4 hit_albedo = vec4(1.0);
 					vec3 hit_position;
+
 					// Offset the ray origin for AA, offset the light position for soft shadows.
-					uint ret = trace_ray_closest_hit_triangle_albedo_alpha(origin + light_dir * (bake_params.bias + length(disk_sample)), light_pos, hit_albedo, hit_position);
+					vec3 from = origin + light_dir * (bake_params.bias + length(disk_sample));
+
+					// Check if new "from" position isn't blocked to avoid sampling through geometry.
+					// Add small offset to avoid landing too close to geometry and ending up still ray casting through it.
+					uint ret = trace_ray_any_hit(texel_center_pos, from + normalize(from - texel_center_pos) * 0.01);
+					if (ret != RAY_MISS) {
+						continue;
+					}
+
+					ret = trace_ray_closest_hit_triangle_albedo_alpha(from, light_pos, hit_albedo, hit_position);
 					if (ret == RAY_MISS) {
 						if (!sample_did_hit) {
 							sample_penumbra = 1.0;
