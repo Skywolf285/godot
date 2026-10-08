@@ -1229,6 +1229,10 @@ void main() {
 	vec4 texel_color = texelFetch(sampler2DArray(source_light, linear_sampler), ivec3(atlas_pos, params.atlas_slice), 0);
 
 	for (int radius = 1; radius <= max_radius; radius++) {
+		if (texel_color.a > 0.5) {
+			break;
+		}
+
 		for (uint i = 0; i < 8; i++) {
 			const ivec2 sample_pos = atlas_pos + directions[i] * radius;
 			// Texture bounds check for robustness.
@@ -1242,10 +1246,6 @@ void main() {
 				texel_color = neighbor_color;
 				break;
 			}
-		}
-
-		if (texel_color.a > 0.5) {
-			break;
 		}
 	}
 
