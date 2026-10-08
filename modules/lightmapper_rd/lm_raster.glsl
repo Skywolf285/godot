@@ -13,6 +13,12 @@ layout(location = 3) out vec3 barycentric;
 layout(location = 4) flat out uvec3 vertex_indices;
 layout(location = 5) flat out vec3 face_normal;
 layout(location = 6) flat out uint fragment_action;
+layout(location = 7) flat out vec2 v1_uv;
+layout(location = 8) flat out vec2 v2_uv;
+layout(location = 9) flat out vec2 v3_uv;
+layout(location = 10) flat out vec3 v1_pos;
+layout(location = 11) flat out vec3 v2_pos;
+layout(location = 12) flat out vec3 v3_pos;
 
 layout(push_constant, std430) uniform Params {
 	vec2 atlas_size;
@@ -49,6 +55,14 @@ void main() {
 	normal_interp = vec3(vertices.data[vertex_idx].normal_xy, vertices.data[vertex_idx].normal_z);
 
 	face_normal = -normalize(cross((vertices.data[vertex_indices.x].position - vertices.data[vertex_indices.y].position), (vertices.data[vertex_indices.x].position - vertices.data[vertex_indices.z].position)));
+
+	v1_uv = vertices.data[vertex_indices.x].uv * params.atlas_size;
+	v2_uv = vertices.data[vertex_indices.y].uv * params.atlas_size;
+	v3_uv = vertices.data[vertex_indices.z].uv * params.atlas_size;
+
+	v1_pos = vertices.data[vertex_indices.x].position;
+	v2_pos = vertices.data[vertex_indices.y].position;
+	v3_pos = vertices.data[vertex_indices.z].position;
 
 	{
 		const float FLAT_THRESHOLD = 0.99;
@@ -88,10 +102,54 @@ layout(location = 3) in vec3 barycentric;
 layout(location = 4) in flat uvec3 vertex_indices;
 layout(location = 5) in flat vec3 face_normal;
 layout(location = 6) in flat uint fragment_action;
+layout(location = 7) in flat vec2 v1_uv;
+layout(location = 8) in flat vec2 v2_uv;
+layout(location = 9) in flat vec2 v3_uv;
+layout(location = 10) in flat vec3 v1_pos;
+layout(location = 11) in flat vec3 v2_pos;
+layout(location = 12) in flat vec3 v3_pos;
 
 layout(location = 0) out vec4 position;
 layout(location = 1) out vec4 normal;
 layout(location = 2) out vec4 unocclude;
+
+const float EDGE_CORRECTION_DISTANCE = 0.01;
+
+// Simplified cross function for 2d vectors. Return same value as cross(vec3(a, 0.0), vec3(b, 0.0)).z.
+float cross2d(const vec2 a, const vec2 b) {
+	return a.x * b.y - a.y * b.x;
+}
+
+// Same as /core/math/geometry_3d.h's triangle_get_barycentric_coords function except for 2d vectors.
+vec3 triangle_get_barycentric_coords(const vec2 p_a, const vec2 p_b, const vec2 p_c, const vec2 p_pos) {
+	vec2 v0 = p_b - p_a;
+	vec2 v1 = p_c - p_a;
+	vec2 v2 = p_pos - p_a;
+
+	float d00 = dot(v0, v0);
+	float d01 = dot(v0, v1);
+	float d11 = dot(v1, v1);
+	float d20 = dot(v2, v0);
+	float d21 = dot(v2, v1);
+	float denom = (d00 * d11 - d01 * d01);
+	if (denom == 0) {
+		return vec3(0.0); //invalid triangle, return empty
+	}
+	float v = (d11 * d20 - d01 * d21) / denom;
+	float w = (d00 * d21 - d01 * d20) / denom;
+	float u = 1.0 - v - w;
+	return vec3(u, v, w);
+}
+
+// Returns perpendicular direction from triangle edge towards triangle's inside.
+vec2 get_cross_dir(const vec2 v1, const vec2 v2) {
+	vec2 uv_center = (v1_uv + v2_uv + v3_uv) / 3.0;
+	float uv_sign = sign(cross2d(v1 - uv_center, v2 - uv_center));
+	return normalize(cross(
+			vec3(v2 - v1, 0.0),
+			vec3(0.0, 0.0, uv_sign))
+					.xy);
+}
 
 void main() {
 	vec3 vertex_pos = vertex_interp;
@@ -162,6 +220,42 @@ void main() {
 		//continued on lm_compute.glsl
 	}
 
-	position = vec4(vertex_pos, 1.0);
+	vec2 coords = gl_FragCoord.xy;
+
+	// Get distance in texels from each triangle's edge in UV space. Each edge's distance is stored as a component of the resulting vec3.
+	vec3 xyz = vec3(
+					   cross2d(normalize(v2_uv - v1_uv), coords - v1_uv),
+					   cross2d(normalize(v3_uv - v2_uv), coords - v2_uv),
+					   cross2d(normalize(v1_uv - v3_uv), coords - v3_uv)) *
+			sign(cross2d(v3_uv - v1_uv, v2_uv - v1_uv));
+
+	vec2 cross_dir = vec2(0.0);
+
+	// Checking per edge, then adding the result. Preferred over just looking for the closest edge to account for cases where a texel in a triangle's corner is too close to two edges.
+	if (xyz.x > -EDGE_CORRECTION_DISTANCE) {
+		cross_dir += get_cross_dir(v1_uv, v2_uv);
+	}
+	if (xyz.y > -EDGE_CORRECTION_DISTANCE) {
+		cross_dir += get_cross_dir(v2_uv, v3_uv);
+	}
+	if (xyz.z > -EDGE_CORRECTION_DISTANCE) {
+		cross_dir += get_cross_dir(v3_uv, v1_uv);
+	}
+
+	if (length(cross_dir) > 0.1) {
+		// Get barycentric coordinates from the neighboring texel towards cross_dir.
+		vec3 offset_barycentric = triangle_get_barycentric_coords(v1_uv, v2_uv, v3_uv, gl_FragCoord.xy + cross_dir);
+
+		// Get the directional vector towards this texel in 3D space.
+		vec3 offset_dir = normalize((v1_pos * offset_barycentric.x + v2_pos * offset_barycentric.y + v3_pos * offset_barycentric.z) - vertex_pos);
+
+		position = vec4(vertex_pos - offset_dir * EDGE_CORRECTION_DISTANCE, 1.0);
+	} else {
+		position = vec4(vertex_pos, 1.0);
+	}
+
 	normal = vec4(normalize(normal_interp), 1.0);
+
+	// Uncomment to no longer keep position values away from triangle edges (for testing only).
+	//position = vec4(vertex_pos, 1.0);
 }

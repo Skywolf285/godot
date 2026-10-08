@@ -106,6 +106,51 @@ layout(push_constant, std430) uniform Params {
 }
 params;
 
+vec3[3] get_triangle_edge_perpendicular_vectors(uint p_triangle_idx) {
+	uvec3 vertex_indices = triangles.data[p_triangle_idx].indices;
+	vec3 triangle_center = (vertices.data[vertex_indices.x].position + vertices.data[vertex_indices.y].position + vertices.data[vertex_indices.z].position) / 3.0;
+	vec3 x_to_center = triangle_center - vertices.data[vertex_indices.x].position;
+
+	vec3 xy = vertices.data[vertex_indices.y].position - vertices.data[vertex_indices.x].position;
+	vec3 yz = vertices.data[vertex_indices.z].position - vertices.data[vertex_indices.y].position;
+	vec3 zx = vertices.data[vertex_indices.x].position - vertices.data[vertex_indices.z].position;
+
+	vec3 true_normal = normalize(cross(xy, x_to_center));
+
+	// Perpendicular directions from each triangle's edge.
+	//vec3 perpendicular_vectors[3] = vec3[3](
+	return vec3[3](
+			normalize(cross(xy, true_normal)),
+			normalize(cross(yz, true_normal)),
+			normalize(cross(zx, true_normal)));
+
+	//return perpendicular_vectors;
+}
+
+vec3 constrain_position_to_triangle(vec3 position, vec3[3] p_pvecs, uint p_triangle_idx) {
+	uvec3 vertex_indices = triangles.data[p_triangle_idx].indices;
+
+	// Distance from each edge.
+	vec3 edge_dist = vec3(
+			dot(position - vertices.data[vertex_indices.x].position, p_pvecs[0]),
+			dot(position - vertices.data[vertex_indices.y].position, p_pvecs[1]),
+			dot(position - vertices.data[vertex_indices.z].position, p_pvecs[2]));
+
+	vec3 pos_offset = vec3(0.0);
+	// Move position slightly inwards to the triangle to avoid rays shooting outside enclosed spaces.
+	if (edge_dist.x > -0.01) {
+		pos_offset += p_pvecs[0] * (-edge_dist.x - 0.01);
+	}
+	if (edge_dist.y > -0.01) {
+		pos_offset += p_pvecs[1] * (-edge_dist.y - 0.01);
+	}
+	if (edge_dist.z > -0.01) {
+		pos_offset += p_pvecs[2] * (-edge_dist.z - 0.01);
+	}
+
+	return position + pos_offset;
+}
+
 //check it, but also return distance and barycentric coords (for uv lookup)
 bool ray_hits_triangle(vec3 from, vec3 dir, float max_dist, vec3 p0, vec3 p1, vec3 p2, out float r_distance, out vec3 r_barycentric) {
 	const float EPSILON = 0.00001;
@@ -738,6 +783,11 @@ vec3 trace_indirect_light(vec3 p_position, vec3 p_ray_dir, inout uint r_noise, f
 			vec3 uvw = vec3(barycentric.x * vert0.uv + barycentric.y * vert1.uv + barycentric.z * vert2.uv, float(triangles.data[tidx].slice));
 			position = barycentric.x * vert0.position + barycentric.y * vert1.position + barycentric.z * vert2.position;
 
+#ifndef MODE_LIGHT_PROBES
+			vec3 perpendicular_vectors[3] = get_triangle_edge_perpendicular_vectors(tidx);
+			position = constrain_position_to_triangle(position, perpendicular_vectors, tidx);
+#endif
+
 			vec3 prev_normal = ray_dir;
 
 			vec3 norm0 = vec3(vert0.normal_xy, vert0.normal_z);
@@ -808,6 +858,11 @@ vec3 trace_indirect_light(vec3 p_position, vec3 p_ray_dir, inout uint r_noise, f
 			Vertex vert2 = vertices.data[triangles.data[tidx].indices.z];
 			vec3 uvw = vec3(barycentric.x * vert0.uv + barycentric.y * vert1.uv + barycentric.z * vert2.uv, float(triangles.data[tidx].slice));
 			position = barycentric.x * vert0.position + barycentric.y * vert1.position + barycentric.z * vert2.position;
+
+#ifndef MODE_LIGHT_PROBES
+			vec3 perpendicular_vectors[3] = get_triangle_edge_perpendicular_vectors(tidx);
+			position = constrain_position_to_triangle(position, perpendicular_vectors, tidx);
+#endif
 
 			vec4 albedo_alpha = textureLod(sampler2DArray(albedo_tex, linear_sampler), uvw, 0).rgba;
 
