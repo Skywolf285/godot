@@ -1188,7 +1188,14 @@ LightmapGI::BakeError LightmapGI::bake(Node *p_from_node, String p_image_data_pa
 					continue;
 				}
 				Array a = mf.mesh->surface_get_arrays(i);
+
 				Ref<Material> mat = mf.mesh->surface_get_material(i);
+				if (i < mf.overrides.size() && mf.overrides[i].is_valid()) {
+					mat = mf.overrides[i];
+				} else {
+					mat = mf.mesh->surface_get_material(i);
+				}
+
 				RID mat_rid;
 				if (mat.is_valid()) {
 					mat_rid = mat->get_rid();
