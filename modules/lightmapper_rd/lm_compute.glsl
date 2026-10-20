@@ -137,15 +137,16 @@ vec3 constrain_position_to_triangle(vec3 position, vec3[3] p_pvecs, uint p_trian
 			dot(position - vertices.data[vertex_indices.z].position, p_pvecs[2]));
 
 	vec3 pos_offset = vec3(0.0);
+	float constrain_distance = bake_params.bias * 10.0;
 	// Move position slightly inwards to the triangle to avoid rays shooting outside enclosed spaces.
-	if (edge_dist.x > -0.01) {
-		pos_offset += p_pvecs[0] * (-edge_dist.x - 0.01);
+	if (edge_dist.x > -constrain_distance) {
+		pos_offset += p_pvecs[0] * (-edge_dist.x - constrain_distance);
 	}
-	if (edge_dist.y > -0.01) {
-		pos_offset += p_pvecs[1] * (-edge_dist.y - 0.01);
+	if (edge_dist.y > -constrain_distance) {
+		pos_offset += p_pvecs[1] * (-edge_dist.y - constrain_distance);
 	}
-	if (edge_dist.z > -0.01) {
-		pos_offset += p_pvecs[2] * (-edge_dist.z - 0.01);
+	if (edge_dist.z > -constrain_distance) {
+		pos_offset += p_pvecs[2] * (-edge_dist.z - constrain_distance);
 	}
 
 	return position + pos_offset;
