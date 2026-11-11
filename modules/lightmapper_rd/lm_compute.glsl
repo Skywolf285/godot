@@ -1160,6 +1160,7 @@ void main() {
 
 	//texel_size = 0.5;
 	//compute tangents
+	const float EPSILON = 0.00001;
 
 	vec4 position_alpha = imageLoad(position, ivec3(atlas_pos, params.atlas_slice));
 	if (position_alpha.a < 0.5) {
@@ -1172,34 +1173,110 @@ void main() {
 	vec3 face_normal = normal_tsize.xyz;
 	float texel_size = normal_tsize.w;
 
+	vec3 rays[8];
+
+	const ivec2 directions[8] = ivec2[8](ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1), ivec2(1, 0), ivec2(1, 1), ivec2(0, 1), ivec2(-1, 1), ivec2(-1, 0));
+
+	// Prioritize world position of neighboring pixels to avoid ray casting to the outside of surfaces when the atlas_pos lies at the edge of an UV island.
+	for (int i = 0; i < 8; i++) {
+		vec4 neighbor_pos = imageLoad(position, ivec3(atlas_pos + directions[i], params.atlas_slice));
+		if (neighbor_pos.a > 0.5) {
+			vec3 neighbor_dir = normalize(neighbor_pos.rgb - vertex_pos);
+			vec3 tangent = normalize(cross(neighbor_dir, face_normal));
+			rays[i] = vec3(-normalize(cross(tangent, face_normal)));
+		} else {
+			rays[i] = vec3(0.0);
+		}
+	}
+
+	// Fallback for cases where UV islands are too small to contain enough valid texels for any of the directions to hit.
 	vec3 v0 = abs(face_normal.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
 	vec3 tangent = normalize(cross(v0, face_normal));
 	vec3 bitangent = normalize(cross(tangent, face_normal));
-	vec3 base_pos = vertex_pos + face_normal * bake_params.bias; // Raise a bit.
+	vec3 fallback_rays[8] = vec3[](
+			tangent,
+			bitangent,
+			-tangent,
+			-bitangent,
+			normalize(tangent + bitangent),
+			normalize(tangent + -bitangent),
+			normalize(-tangent + bitangent),
+			normalize(-tangent + -bitangent));
 
-	vec3 rays[4] = vec3[](tangent, bitangent, -tangent, -bitangent);
 	float min_d = 1e20;
 	float unocclude_mask = 0.0;
 
-	for (int i = 0; i < 4; i++) {
-		vec3 ray_to = base_pos + rays[i] * texel_size * params.denoiser_range;
+	// Ray cast from slightly behind the position to account for cases where this texel position lies too close to a triangle, causing it to miss.
+	for (uint ray_type = 0; ray_type < 2; ray_type++) {
 		float d;
 		vec3 norm;
+		vec3 base_pos = vertex_pos + face_normal * bake_params.bias; // Raise a bit.
 
-		if (trace_ray_closest_hit_distance(base_pos, ray_to, d, norm) == RAY_BACK) {
-			unocclude_mask = 1.0;
-			if (d <= texel_size && d < min_d) {
-				// This bias needs to be greater than the regular bias, because otherwise later, rays will go the other side when pointing back.
-				vertex_pos = base_pos + rays[i] * d + norm * bake_params.bias * 10.0;
-				min_d = d;
+		for (int j = 0; j < 8; j++) {
+			vec3 ray = ray_type == 0 ? rays[j] : fallback_rays[j]; // Switch to fallback ray direction in case directions derived from position data fail.
+			if (length(ray) > EPSILON) {
+				// Use high bias multiplier to ensure geometry far away from origin still works with floating point precision
+				// while also accounting for corners at very narrow or shallow angles by making sure the angle between ray_to and base_pos is flat enough.
+				vec3 ray_to = base_pos + ray * bake_params.bias * 20.0; //params.denoiser_range;
+				if (trace_ray_closest_hit_distance(base_pos - (ray * bake_params.bias * 10.0) * float(1), ray_to, d, norm) == RAY_BACK) {
+					unocclude_mask = 1.0;
+					// This bias needs to be greater than the regular bias, because otherwise later, rays will go the other side when pointing back.
+					vertex_pos = vertex_pos + ray * d + ray * bake_params.bias * 10.0; // * 10.0;
+				}
 			}
+		}
+		if (unocclude_mask > 0.5) {
+			// A ray hit, no need to resort to fallback_rays.
+			break;
+		}
+	}
+
+	vec3 original_pos = vertex_pos + face_normal * bake_params.bias; // Raise a bit.
+
+	vec3 new_pos = original_pos;
+	for (uint ray_type = 0; ray_type < 2; ray_type++) {
+		bool has_hit_this_ray_type = false;
+		// Check for occlusion several times to get texel position unoccluded even if it has to go through multiple triangles.
+		for (int i = 0; i < 16; i++) {
+			bool has_hit_this_pass = false;
+			min_d = 1e20;
+			vec3 base_pos = new_pos;
+
+			for (int j = 0; j < 8; j++) {
+				vec3 ray = ray_type == 0 ? rays[j] : fallback_rays[j];
+				if (length(ray) > EPSILON) {
+					vec3 ray_to = base_pos + ray * texel_size * params.denoiser_range;
+					float d;
+					vec3 norm;
+					if (trace_ray_closest_hit_distance(base_pos, ray_to, d, norm) == RAY_BACK) {
+						unocclude_mask = 1.0;
+						has_hit_this_pass = true;
+						if (d <= texel_size * bake_params.supersampling_factor && d < min_d) { // Scale with supersampling factor to avoid shadow bleeding.
+							has_hit_this_ray_type = true;
+							// This bias needs to be greater than the regular bias, because otherwise later, rays will go the other side when pointing back.
+							new_pos = base_pos + ray * d + norm * bake_params.bias * 10.0;
+							min_d = d;
+						}
+					}
+				}
+			}
+			if (distance(original_pos, new_pos) > texel_size * bake_params.supersampling_factor || !has_hit_this_pass) { // Scale with supersampling factor to avoid shadow bleeding.
+				// Don't stray too far from the texel's original position.
+				break;
+			}
+
+			vertex_pos = new_pos;
+		}
+		if (has_hit_this_ray_type) {
+			// A ray hit, no need to resort to fallback_rays.
+			break;
 		}
 	}
 
 	position_alpha.xyz = vertex_pos;
 
 	imageStore(position, ivec3(atlas_pos, params.atlas_slice), position_alpha);
-	imageStore(unocclude, ivec3(atlas_pos, params.atlas_slice), vec4(unocclude_mask, 0, 0, 0));
+	imageStore(unocclude, ivec3(atlas_pos, params.atlas_slice), vec4(position_alpha.xyz, unocclude_mask));
 
 #endif
 
