@@ -92,6 +92,7 @@ layout(set = 1, binding = 4) uniform DenoiseParams {
 	uint slice_count;
 }
 denoise_params;
+layout(set = 1, binding = 5) uniform texture2DArray source_position;
 #endif
 
 layout(push_constant, std430) uniform Params {
@@ -1446,33 +1447,141 @@ void main() {
 		vec4 input_light = texelFetch(sampler2DArray(source_light, linear_sampler), ivec3(atlas_pos, lightmap_slice), 0);
 		vec3 input_albedo = texelFetch(sampler2DArray(albedo_tex, linear_sampler), ivec3(atlas_pos, params.atlas_slice), 0).rgb;
 		vec3 input_normal = texelFetch(sampler2DArray(source_normal, linear_sampler), ivec3(atlas_pos, params.atlas_slice), 0).xyz;
+
 		if (length(input_normal) > EPSILON) {
 			// Compute the denoised pixel if the normal is valid.
 			float sum_weights = 0.0f;
 			vec3 input_rgb = input_light.rgb;
+
 			for (int search_y = -HALF_SEARCH_WINDOW; search_y <= HALF_SEARCH_WINDOW; search_y++) {
 				for (int search_x = -HALF_SEARCH_WINDOW; search_x <= HALF_SEARCH_WINDOW; search_x++) {
 					ivec2 search_pos = atlas_pos + ivec2(search_x, search_y);
-					vec3 search_rgb = texelFetch(sampler2DArray(source_light, linear_sampler), ivec3(search_pos, lightmap_slice), 0).rgb;
-					vec3 search_albedo = texelFetch(sampler2DArray(albedo_tex, linear_sampler), ivec3(search_pos, params.atlas_slice), 0).rgb;
 					vec3 search_normal = texelFetch(sampler2DArray(source_normal, linear_sampler), ivec3(search_pos, params.atlas_slice), 0).xyz;
-					float search_occlusion = texelFetch(sampler2DArray(unocclude_mask, linear_sampler), ivec3(search_pos, params.atlas_slice), 0).r;
+					float search_occlusion = 0.0;
+
+					// To avoid sampling through occluded and empty areas do we step through each texel from the current atlas post to the current search_x and search.y.
+
+					// Setup step count and increment for DDA (Digital Differential Analyzer) line algorithm.
+					uint steps = uint(max(abs(search_x), abs(search_y)));
+					float fdx = abs(search_x) > 0 ? float(search_x) / float(steps) : 0.0;
+					float fdy = abs(search_y) > 0 ? float(search_y) / float(steps) : 0.0;
+					vec2 increment = vec2(fdx, fdy);
+
+					vec2 search_line = vec2(atlas_pos); // Current coordinates of line step.
+					ivec2 search_line_rounded = ivec2(round(search_line));
+					ivec2 last_search_line_rounded = ivec2(round(search_line - increment));
+
+					vec3 current_position = texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(atlas_pos, params.atlas_slice), 0).rgb;
+					vec4 estimated_last_position = texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(round(search_line - increment), params.atlas_slice), 0); // Sampled as vec4 so the alpha channel can be used to check if texel is valid.
+					vec3 last_position = estimated_last_position.rgb;
+
+					vec3 line_dir_world_space = current_position - last_position;
+
+					vec4 last_occlusion = texelFetch(sampler2DArray(unocclude_mask, linear_sampler), ivec3(round(search_line), params.atlas_slice), 0);
+					for (uint j = 0; j <= steps; j++) {
+						if (any(lessThan(round(search_line), ivec2(0))) || any(greaterThanEqual(round(search_line), bake_params.atlas_size))) {
+							break;
+						}
+
+						search_normal = texelFetch(sampler2DArray(source_normal, linear_sampler), ivec3(round(search_line), params.atlas_slice), 0).xyz;
+						if (length(search_normal) < EPSILON) {
+							break;
+						}
+
+						vec4 occlusion = texelFetch(sampler2DArray(unocclude_mask, linear_sampler), ivec3(round(search_line), params.atlas_slice), 0);
+						search_occlusion = 0.0;
+
+						// We could pass through 1 pixel wide occcluded areas when going diagonal. So check for that.
+						if (occlusion.a < 0.5) {
+							ivec2 search_line_diff = last_search_line_rounded - search_line_rounded;
+							if (search_line_diff.x != 0 && search_line_diff.y != 0) {
+								// Going diagonal. Check if both texels we just moved between are occluded.
+								if (texelFetch(sampler2DArray(unocclude_mask, linear_sampler), ivec3(search_line_rounded + ivec2(search_line_diff.x, 0.0), params.atlas_slice), 0).a > 0.5 && texelFetch(sampler2DArray(unocclude_mask, linear_sampler), ivec3(search_line_rounded + ivec2(0.0, search_line_diff.y), params.atlas_slice), 0).a > 0.5) {
+									// They are, mark this texel as occluded as well.
+									occlusion.a = 2.0;
+								}
+							}
+						}
+
+						if (occlusion.a > 0.5 || last_occlusion.a > 0.5) {
+							if (j > 0 || estimated_last_position.a > 0.5) { // last_position may be outside UV island on first loop. Skip it in that case.
+								vec3 base = last_position + search_normal * bake_params.bias;
+								vec3 ray_to = current_position + search_normal * bake_params.bias;
+								float d;
+								vec3 norm;
+								uint ret = trace_ray_closest_hit_distance(base, ray_to, d, norm);
+								if (ret != RAY_MISS) {
+									search_occlusion = 1.0;
+									break;
+								}
+							}
+						}
+
+						if (j == steps) {
+							// Don't increment on last loop to avoid overshooting.
+							break;
+						}
+
+						last_position = current_position;
+						last_occlusion = occlusion;
+
+						search_line += increment;
+						last_search_line_rounded = search_line_rounded;
+						search_line_rounded = ivec2(round(search_line));
+
+						current_position = texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(round(search_line), params.atlas_slice), 0).rgb;
+						line_dir_world_space = current_position - last_position;
+					}
+
+					ivec2 corrected_search_pos = ivec2(round(search_line));
+
+					vec3 search_rgb = texelFetch(sampler2DArray(source_light, linear_sampler), ivec3(corrected_search_pos, lightmap_slice), 0).rgb;
+					vec3 search_albedo = texelFetch(sampler2DArray(albedo_tex, linear_sampler), ivec3(corrected_search_pos, params.atlas_slice), 0).rgb;
+
 					float patch_square_dist = 0.0f;
+					uint patch_square_dist_samples = 0;
 					for (int offset_y = -HALF_PATCH_WINDOW; offset_y <= HALF_PATCH_WINDOW; offset_y++) {
 						for (int offset_x = -HALF_PATCH_WINDOW; offset_x <= HALF_PATCH_WINDOW; offset_x++) {
-							ivec2 offset_input_pos = atlas_pos + ivec2(offset_x, offset_y);
-							ivec2 offset_search_pos = search_pos + ivec2(offset_x, offset_y);
-							vec3 offset_input_rgb = texelFetch(sampler2DArray(source_light, linear_sampler), ivec3(offset_input_pos, slice_base), 0).rgb;
-							vec3 offset_search_rgb = texelFetch(sampler2DArray(source_light, linear_sampler), ivec3(offset_search_pos, slice_base), 0).rgb;
-							vec3 offset_delta_rgb = offset_input_rgb - offset_search_rgb;
+							steps = uint(max(abs(offset_x), abs(offset_y)));
+							fdx = abs(search_x) > 0 ? float(offset_x) / float(steps) : 0.0;
+							fdy = abs(search_y) > 0 ? float(offset_y) / float(steps) : 0.0;
+							increment = vec2(fdx, fdy);
 
-							if (is_directional) {
-								// Since L0 data is 1/4 the value of a regular lightmap,
-								// we have to multiply it by 4.
-								offset_delta_rgb *= 4.0;
+							search_line = vec2(0.0);
+
+							ivec2 offset_input_pos;
+							ivec2 offset_search_pos;
+							bool offset_outside_uv_island = false;
+							for (uint j = 0; j <= steps; j++) {
+								offset_input_pos = atlas_pos + ivec2(round(search_line));
+								offset_search_pos = corrected_search_pos + ivec2(round(search_line));
+								if (texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(offset_input_pos, params.atlas_slice), 0).a < 0.5 || texelFetch(sampler2DArray(source_position, linear_sampler), ivec3(offset_search_pos, params.atlas_slice), 0).a < 0.5) {
+									offset_outside_uv_island = true;
+									break;
+								}
+
+								search_line += increment;
 							}
 
-							patch_square_dist += dot(offset_delta_rgb, offset_delta_rgb) - TWO_SIGMA_LIGHT_SQUARE;
+							if (!offset_outside_uv_island) {
+								ivec2 offset_input_pos = atlas_pos + ivec2(offset_x, offset_y);
+								ivec2 offset_search_pos = corrected_search_pos + ivec2(offset_x, offset_y);
+								vec3 offset_input_rgb = texelFetch(sampler2DArray(source_light, linear_sampler), ivec3(offset_input_pos, slice_base), 0).rgb;
+								vec3 offset_search_rgb = texelFetch(sampler2DArray(source_light, linear_sampler), ivec3(offset_search_pos, slice_base), 0).rgb;
+								vec3 offset_delta_rgb = offset_input_rgb - offset_search_rgb;
+
+								if (is_directional) {
+									// Since L0 data is 1/4 the value of a regular lightmap,
+									// we have to multiply it by 4.
+									offset_delta_rgb *= 4.0;
+								}
+
+								patch_square_dist += dot(offset_delta_rgb, offset_delta_rgb) - TWO_SIGMA_LIGHT_SQUARE;
+								patch_square_dist_samples++;
+							} else {
+								patch_square_dist += max(0.0, (patch_square_dist / patch_square_dist_samples));
+								patch_square_dist_samples++;
+							}
 						}
 					}
 
@@ -1481,13 +1590,13 @@ void main() {
 					float weight = 1.0f;
 
 					// Ignore weight if search position is out of bounds.
-					weight *= step(0, search_pos.x) * step(search_pos.x, bake_params.atlas_size.x - 1);
-					weight *= step(0, search_pos.y) * step(search_pos.y, bake_params.atlas_size.y - 1);
+					weight *= step(0, corrected_search_pos.x) * step(corrected_search_pos.x, bake_params.atlas_size.x - 1);
+					weight *= step(0, corrected_search_pos.y) * step(corrected_search_pos.y, bake_params.atlas_size.y - 1);
 
 					// Ignore weight if normal is zero length.
 					weight *= step(EPSILON, length(search_normal));
 
-					// Weight with pixel distance.
+					// Weight with pixel distance. Using search_x and search_y instead of basing it of search_line to keep original distance falloff.
 					vec2 pixel_delta = vec2(search_x, search_y);
 					float pixel_square_dist = dot(pixel_delta, pixel_delta);
 					weight *= exp(-pixel_square_dist / TWO_SIGMA_SPATIAL_SQUARE);
@@ -1519,6 +1628,12 @@ void main() {
 			// Ignore pixels where the normal is empty, just copy the light color.
 			denoised_rgb = input_light.rgb;
 		}
+
+		// uncomment for unocclude_mask debug.
+		// 		vec4 occ_debug = texelFetch(sampler2DArray(unocclude_mask, linear_sampler), ivec3(atlas_pos, params.atlas_slice), 0).rgba;
+		// 		if (occ_debug.a > 0.5) {
+		// 			denoised_rgb = mix(denoised_rgb, vec3(1.0, 0.0, 0.0), clamp(occ_debug.a, 0.0, 0.1));
+		// 		}
 
 		imageStore(dest_light, ivec3(atlas_pos, lightmap_slice), vec4(denoised_rgb, input_light.a));
 	}

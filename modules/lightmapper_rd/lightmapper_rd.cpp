@@ -1015,7 +1015,7 @@ LightmapperRD::BakeError LightmapperRD::_denoise_oidn(RenderingDevice *p_rd, RID
 	return BAKE_OK;
 }
 
-LightmapperRD::BakeError LightmapperRD::_denoise(RenderingDevice *p_rd, Ref<RDShaderFile> &p_compute_shader, const RID &p_compute_base_uniform_set, PushConstant &p_push_constant, RID p_source_light_tex, RID p_source_normal_tex, RID p_dest_light_tex, RID p_unocclude_tex, float p_denoiser_strength, int p_denoiser_range, const Size2i &p_atlas_size, int p_atlas_slices, bool p_bake_sh, BakeStepFunc p_step_function, void *p_bake_userdata) {
+LightmapperRD::BakeError LightmapperRD::_denoise(RenderingDevice *p_rd, Ref<RDShaderFile> &p_compute_shader, const RID &p_compute_base_uniform_set, PushConstant &p_push_constant, RID p_source_light_tex, RID p_source_normal_tex, RID p_dest_light_tex, RID p_unocclude_tex, RID p_position_tex, float p_denoiser_strength, int p_denoiser_range, const Size2i &p_atlas_size, int p_atlas_slices, bool p_bake_sh, BakeStepFunc p_step_function, void *p_bake_userdata) {
 	RID denoise_params_buffer = p_rd->uniform_buffer_create(sizeof(DenoiseParams));
 	DenoiseParams denoise_params;
 	denoise_params.spatial_bandwidth = 5.0f;
@@ -1047,6 +1047,13 @@ LightmapperRD::BakeError LightmapperRD::_denoise(RenderingDevice *p_rd, Ref<RDSh
 		u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
 		u.binding = 4;
 		u.append_id(denoise_params_buffer);
+		uniforms.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
+		u.binding = 5;
+		u.append_id(p_position_tex);
 		uniforms.push_back(u);
 	}
 
@@ -2194,7 +2201,7 @@ LightmapperRD::BakeError LightmapperRD::bake(BakeQuality p_quality, bool p_use_d
 			} else {
 				// JNLM (built-in).
 				SWAP(light_accum_tex, light_accum_tex2);
-				error = _denoise(rd, compute_shader, compute_base_uniform_set, push_constant, light_accum_tex2, normal_tex, light_accum_tex, unocclude_tex, p_denoiser_strength, p_denoiser_range, atlas_size, atlas_slices, p_bake_sh, p_step_function, p_bake_userdata);
+				error = _denoise(rd, compute_shader, compute_base_uniform_set, push_constant, light_accum_tex2, normal_tex, light_accum_tex, unocclude_tex, position_tex, p_denoiser_strength, p_denoiser_range, atlas_size, atlas_slices, p_bake_sh, p_step_function, p_bake_userdata);
 			}
 			if (unlikely(error != BAKE_OK)) {
 				return error;
@@ -2209,7 +2216,7 @@ LightmapperRD::BakeError LightmapperRD::bake(BakeQuality p_quality, bool p_use_d
 			} else {
 				// JNLM (built-in).
 				SWAP(shadowmask_tex, shadowmask_tex2);
-				error = _denoise(rd, compute_shader, compute_base_uniform_set, push_constant, shadowmask_tex2, normal_tex, shadowmask_tex, unocclude_tex, p_denoiser_strength, p_denoiser_range, atlas_size, atlas_slices, false, p_step_function, p_bake_userdata);
+				error = _denoise(rd, compute_shader, compute_base_uniform_set, push_constant, shadowmask_tex2, normal_tex, shadowmask_tex, unocclude_tex, position_tex, p_denoiser_strength, p_denoiser_range, atlas_size, atlas_slices, false, p_step_function, p_bake_userdata);
 			}
 			if (unlikely(error != BAKE_OK)) {
 				return error;
