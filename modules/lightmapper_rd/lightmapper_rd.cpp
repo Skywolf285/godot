@@ -311,12 +311,13 @@ Lightmapper::BakeError LightmapperRD::_blit_meshes_into_atlas(int p_max_texture_
 		MeshInstance &mi = mesh_instances.write[m_i];
 		Size2i s = Size2i(mi.data.albedo_on_uv2->get_width(), mi.data.albedo_on_uv2->get_height());
 		sizes.push_back(s);
-		largest_mesh_lightmap_size = largest_mesh_lightmap_size.max(s + Size2i(2, 2).maxi(p_denoiser_range) * p_supersampling_factor);
+		largest_mesh_lightmap_size = largest_mesh_lightmap_size.max(s + Size2i(2, 2).maxi(p_denoiser_range));
 	}
 
+	// Multiply by supersampling factor after getting the nearest power of two to avoid final lightmap shrinking when using a non power of two supersampling factor.
 	const int min_atlas_size = MAX(
-			Math::nearest_power_of_2_templated(largest_mesh_lightmap_size.width),
-			Math::nearest_power_of_2_templated(largest_mesh_lightmap_size.height));
+			Math::nearest_power_of_2_templated(largest_mesh_lightmap_size.width) * p_supersampling_factor,
+			Math::nearest_power_of_2_templated(largest_mesh_lightmap_size.height) * p_supersampling_factor);
 
 	const int atlas_size_limit = MIN(int(p_max_texture_size * p_supersampling_factor), p_device_max_texture_size);
 	if (min_atlas_size > atlas_size_limit) {
