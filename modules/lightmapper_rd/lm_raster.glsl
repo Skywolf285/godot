@@ -113,8 +113,6 @@ layout(location = 0) out vec4 position;
 layout(location = 1) out vec4 normal;
 layout(location = 2) out vec4 unocclude;
 
-const float EDGE_CORRECTION_DISTANCE = 0.01;
-
 // Simplified cross function for 2d vectors. Return same value as cross(vec3(a, 0.0), vec3(b, 0.0)).z.
 float cross2d(const vec2 a, const vec2 b) {
 	return a.x * b.y - a.y * b.x;
@@ -231,14 +229,15 @@ void main() {
 
 	vec2 cross_dir = vec2(0.0);
 
+	float edge_correction_distance = bake_params.bias * 10.0;
 	// Checking per edge, then adding the result. Preferred over just looking for the closest edge to account for cases where a texel in a triangle's corner is too close to two edges.
-	if (xyz.x > -EDGE_CORRECTION_DISTANCE) {
+	if (xyz.x > -edge_correction_distance) {
 		cross_dir += get_cross_dir(v1_uv, v2_uv);
 	}
-	if (xyz.y > -EDGE_CORRECTION_DISTANCE) {
+	if (xyz.y > -edge_correction_distance) {
 		cross_dir += get_cross_dir(v2_uv, v3_uv);
 	}
-	if (xyz.z > -EDGE_CORRECTION_DISTANCE) {
+	if (xyz.z > -edge_correction_distance) {
 		cross_dir += get_cross_dir(v3_uv, v1_uv);
 	}
 
@@ -249,12 +248,13 @@ void main() {
 		// Get the directional vector towards this texel in 3D space.
 		vec3 offset_dir = normalize((v1_pos * offset_barycentric.x + v2_pos * offset_barycentric.y + v3_pos * offset_barycentric.z) - vertex_pos);
 
-		position = vec4(vertex_pos - offset_dir * EDGE_CORRECTION_DISTANCE, 1.0);
+		position = vec4(vertex_pos - offset_dir * edge_correction_distance, 1.0);
 	} else {
 		position = vec4(vertex_pos, 1.0);
 	}
 
 	normal = vec4(normalize(normal_interp), 1.0);
+	//normal = vec4(face_normal, 1.0);
 
 	// Uncomment to no longer keep position values away from triangle edges (for testing only).
 	//position = vec4(vertex_pos, 1.0);
