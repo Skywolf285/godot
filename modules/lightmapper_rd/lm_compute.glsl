@@ -642,14 +642,15 @@ void trace_direct_light(vec3 p_position, vec3 p_normal, uint p_light_index, bool
 						// Offset the ray origin for AA, offset the light position for soft shadows.
 						vec3 from = origin - light_disk_to_point * (bake_params.bias + length(disk_sample));
 
-						// Check if new "from" position isn't blocked to avoid sampling through geometry.
-						// Add small offset to avoid landing too close to geometry and ending up still ray casting through it.
-						uint ret = trace_ray_any_hit(texel_center_pos, from + normalize(from - texel_center_pos) * 0.01);
-						if (ret != RAY_MISS) {
-							continue;
+						float hit_dist;
+						vec3 hit_norm;
+						// Avoid sampling through geometry.
+						if (trace_ray_closest_hit_distance(texel_center_pos, from + (p_normal * bake_params.bias), hit_dist, hit_norm) != RAY_MISS) {
+							// Move away from wall a bit. Higher than regular bake bias to avoid rays going through.
+							from = p_position + normalize(from - p_position) * hit_dist + hit_norm * (bake_params.bias * 10.0);
 						}
 
-						ret = trace_ray_closest_hit_triangle_albedo_alpha(from, p_position - light_disk_to_point * dist, hit_albedo, hit_position);
+						uint ret = trace_ray_closest_hit_triangle_albedo_alpha(from, p_position - light_disk_to_point * dist, hit_albedo, hit_position);
 						if (ret == RAY_MISS) {
 							if (!sample_did_hit) {
 								sample_penumbra = 1.0;
@@ -693,14 +694,15 @@ void trace_direct_light(vec3 p_position, vec3 p_normal, uint p_light_index, bool
 					// Offset the ray origin for AA, offset the light position for soft shadows.
 					vec3 from = origin + light_dir * (bake_params.bias + length(disk_sample));
 
-					// Check if new "from" position isn't blocked to avoid sampling through geometry.
-					// Add small offset to avoid landing too close to geometry and ending up still ray casting through it.
-					uint ret = trace_ray_any_hit(texel_center_pos, from + normalize(from - texel_center_pos) * 0.01);
-					if (ret != RAY_MISS) {
-						continue;
+					float hit_dist;
+					vec3 hit_norm;
+					// Avoid sampling through geometry.
+					if (trace_ray_closest_hit_distance(texel_center_pos, from + (p_normal * bake_params.bias), hit_dist, hit_norm) != RAY_MISS) {
+						// Move away from wall a bit. Higher than regular bake bias to avoid rays going through.
+						from = p_position + normalize(from - p_position) * hit_dist + hit_norm * (bake_params.bias * 10.0);
 					}
 
-					ret = trace_ray_closest_hit_triangle_albedo_alpha(from, light_pos, hit_albedo, hit_position);
+					uint ret = trace_ray_closest_hit_triangle_albedo_alpha(from, light_pos, hit_albedo, hit_position);
 					if (ret == RAY_MISS) {
 						if (!sample_did_hit) {
 							sample_penumbra = 1.0;
@@ -717,6 +719,7 @@ void trace_direct_light(vec3 p_position, vec3 p_normal, uint p_light_index, bool
 							sample_penumbra_color = mix(sample_penumbra_color, sample_penumbra_color * hit_albedo.rgb, hit_albedo.a);
 							sample_penumbra *= 1.0 - hit_albedo.a;
 						}
+
 						origin = hit_position + shadow_dir * bake_params.bias;
 
 						if (sample_penumbra - EPSILON <= 0) {
